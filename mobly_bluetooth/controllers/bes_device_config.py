@@ -23,8 +23,7 @@ import logging
 from typing import Any
 
 import dacite
-
-from mobly.controllers.bluetooth.lib import utils
+from mobly_bluetooth.lib import utils
 
 # Error messages used in this module.
 _DEVICE_EMPTY_CONFIG_MSG = 'Configuration is empty, abort!'
@@ -48,7 +47,7 @@ def from_dicts(configs: Sequence[dict[str, Any]]) -> list[DeviceConfig]:
     A list of DeviceConfig.
 
   Raises:
-    errors.ConfigError: Invalid controller config is given.
+    ConfigError: Invalid controller config is given.
   """
   device_configs = []
   if not configs:

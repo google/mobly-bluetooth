@@ -16,35 +16,4 @@
 
 import setuptools
 
-description = (
-    'Mobly Bluetooth controller module for operating Bluetooth reference'
-    ' devices and development boards in Mobly tests.'
-)
-
-install_requires = [
-    'dacite',
-    'immutabledict',
-    'mobly>=1.12.2',
-    'paramiko>=2.10.4',
-    'python-dateutil',
-    'typing-extensions',
-]
-
-setuptools.setup(
-    name='mobly-bluetooth',
-    version='0.1.0',
-    author='Google LLC',
-    author_email='mobly-github@googlegroups.com',
-    description=description,
-    license='Apache2.0',
-    url='https://github.com/google/mobly-bluetooth',
-    packages=setuptools.find_namespace_packages(
-        include=['mobly.controllers.*']
-    ),
-    package_data={
-        'mobly.controllers.bluetooth': ['tools/*'],
-    },
-    include_package_data=True,
-    install_requires=install_requires,
-    python_requires='>=3.11',
-)
+setuptools.setup()

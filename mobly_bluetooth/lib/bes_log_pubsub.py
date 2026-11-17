@@ -21,6 +21,7 @@ patterns to appear in the logs.
 The BES response subscriber specifically waits for the BES command response in
 the log and parses the data, execution results and error code from the raw log.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -30,7 +31,7 @@ import re
 import threading
 from typing import Any
 
-from mobly.controllers.bluetooth.lib import logcat_pubsub
+from mobly_bluetooth.lib import logcat_pubsub
 
 # Error messages
 _PROCESS_NOT_RUNNING_ERROR_MESSAGE = (
@@ -60,6 +61,7 @@ class LogParsedData:
     host_time: The local time on the host.
     line: The full unparsed string of the line.
   """
+
   time: str
   level: str
   tag: str
@@ -78,6 +80,7 @@ class BesResponseData:
       SUCCESS. Non-zero error code if the execution status is FAIL.
     message: The detailed message contained in the response.
   """
+
   status: str
   error_code: int
   message: str

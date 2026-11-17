@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Controller configurations for the Bluetooth reference device module."""
+"""Controller configurations for the Raspberry Pi reference device module."""
 
 from __future__ import annotations
 
@@ -22,8 +22,8 @@ import logging
 from typing import Any
 
 import dacite
-
-from mobly.controllers.bluetooth.lib import errors
+from mobly_bluetooth.lib import errors
+from typing_extensions import Self
 
 # Error messages used in this module.
 _DEVICE_EMPTY_CONFIG_MSG = 'Configuration is empty, abort!'
@@ -73,7 +73,7 @@ class DeviceConfig:
     ssh_port: The SSH port of the test machine.
     username: Username to log the device in.
     password: Password to log the device in.
-    keyfile: The lacal file path to the SSH key file on the Mobly test host
+    keyfile: The local file path to the SSH key file on the Mobly test host
       machine.
     proxy_command: The SSH proxy command to use. For example, to access a device
       via a jump host, set "proxy_command='ssh -W <IP>:<port> jump_host'". Note
@@ -116,6 +116,7 @@ class DeviceConfig:
   #   ```config.yaml
   #   RpiDevice:
   #   - hostname: '127.0.0.1'
+  #     username: 'pi'
   #     dimensions:
   #       mode: 'headset'
   #       use_bes: True
@@ -123,7 +124,7 @@ class DeviceConfig:
   dimensions: dict[str, Any] = dataclasses.field(default_factory=dict)
 
   def __post_init__(self):
-    """Validates required fields and initializes directory paths if not set."""
+    """Validates required fields."""
     if not self.username:
       raise errors.ConfigError(
           f'{_CONFIG_MISSING_REQUIRED_KEY_MSG}: username is required.'
@@ -151,7 +152,7 @@ class DeviceConfig:
     return default_value
 
   @classmethod
-  def from_dict(cls, config: dict[str, Any]) -> DeviceConfig:
+  def from_dict(cls, config: dict[str, Any]) -> Self:
     """Parses controller configs from Mobly runner to DeviceConfig.
 
     Args:
@@ -170,7 +171,7 @@ class DeviceConfig:
     }
     try:
       return dacite.from_dict(
-          data_class=DeviceConfig,
+          data_class=cls,
           data=config,
           config=dacite.Config(type_hooks=type_converters),
       )

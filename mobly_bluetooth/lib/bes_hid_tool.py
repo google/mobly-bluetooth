@@ -14,15 +14,16 @@
 
 """HID tool for BES boards."""
 
+import contextlib
 import datetime
+from importlib import resources
 import logging
 import pathlib
 import re
 import time
 
 from mobly import utils as mobly_utils
-
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
+from mobly_bluetooth.lib import ssh as ssh_lib
 
 # The command to install the hidapi library
 _HIDAPI_PKG_NAME = 'libhidapi-dev'
@@ -36,10 +37,6 @@ _HIDLIB_INSTALL_COMMAND_LOCAL = (
 )
 _UNUSED_APT_CONFIG_FILE = '/etc/apt/apt.conf.d/99defaultrelease'
 _REMOVE_APT_CONFIG_COMMAND = 'echo {password} | sudo -S rm {config_file}'
-
-_HID_TOOL_CODE_PATH = str(
-    pathlib.Path(__file__).resolve().parent.parent / 'tools' / 'hidtool.c'
-)
 
 # The directory path pattern to save cache files on Raspberry Pi
 _REMOTE_CACHE_DIR_PATH = '/home/{username}/.cache'
@@ -58,6 +55,22 @@ _STABLE_MCU_VERSION = 'V1.0.3'
 # Timeouts for waiting for the BES boards to be ready
 _SHORT_TIMEOUT = datetime.timedelta(seconds=10)
 _LONG_TIMEOUT = datetime.timedelta(seconds=30)
+
+
+def _hid_tool_code_path() -> contextlib.AbstractContextManager[pathlib.Path]:
+  """Returns a context manager yielding a local filesystem path to hidtool.c."""
+  parent_package = (__package__ or '').rpartition('.')[0]
+  if parent_package:
+    return resources.as_file(
+        resources.files(parent_package).joinpath(
+            'tools', _DEFAULT_HIDTOOL_SOURCE_NAME
+        )
+    )
+  return contextlib.nullcontext(
+      pathlib.Path(__file__).resolve().parent.parent
+      / 'tools'
+      / _DEFAULT_HIDTOOL_SOURCE_NAME
+  )
 
 
 def _install_hidapi_lib_local() -> None:
@@ -83,7 +96,7 @@ def _install_hidapi_lib_remote(
     ssh.execute_command(_HIDLIB_LIST_COMMAND)
     logging.info('HID library is already installed.')
     return
-  except Exception:  # pylint: disable=broad-except
+  except ssh_lib.SSH_ERRORS:
     pass
 
   if ssh.is_file(_UNUSED_APT_CONFIG_FILE):
@@ -104,34 +117,34 @@ def _push_code_file_to_remote(ssh: ssh_lib.SSHProxy, username: str) -> None:
           _DEFAULT_HIDTOOL_SOURCE_NAME,
       )
   )
-  local_hid_code_path = _HID_TOOL_CODE_PATH
   if ssh.is_file(remote_hid_code_path):
     try:
       ssh.rm_file(remote_hid_code_path)
     except IOError:
       return
 
-  ssh.push(
-      local_src_filename=local_hid_code_path,
-      remote_dest_filename=remote_hid_code_path,
-      change_permission=True,
-  )
+  with _hid_tool_code_path() as local_hid_code_path:
+    ssh.push(
+        local_src_filename=str(local_hid_code_path),
+        remote_dest_filename=remote_hid_code_path,
+        change_permission=True,
+    )
 
 
 def _compile_hidtool_local() -> None:
   """Compiles HID tool source code to a binary on Mobly host."""
-  local_hid_code_path = _HID_TOOL_CODE_PATH
   output_file_path = pathlib.Path(
       _LOCAL_CACHE_DIR_PATH,
       _DEFAULT_HIDTOOL_NAME,
   )
-  mobly_utils.run_command(
-      cmd=_HIDTOOL_COMPILE_COMMAND.format(
-          output_path=output_file_path,
-          source_path=local_hid_code_path,
-      ),
-      shell=True,
-  )
+  with _hid_tool_code_path() as local_hid_code_path:
+    mobly_utils.run_command(
+        cmd=_HIDTOOL_COMPILE_COMMAND.format(
+            output_path=output_file_path,
+            source_path=local_hid_code_path,
+        ),
+        shell=True,
+    )
   if not output_file_path.is_file():
     raise FileNotFoundError('Failed to compile HID tool')
   logging.info('HID tool compiled as %s', output_file_path)

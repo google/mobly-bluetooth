@@ -27,7 +27,7 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import dacite
 import immutabledict
@@ -35,17 +35,16 @@ from mobly import logger as mobly_logger
 from mobly import runtime_test_info
 from mobly import signals
 from mobly import utils as mobly_utils
+from mobly_bluetooth.controllers import bes_device_config
+from mobly_bluetooth.controllers import bluetooth_reference_device_base
+from mobly_bluetooth.lib import audio_recorder
+from mobly_bluetooth.lib import bes_constants as constants
+from mobly_bluetooth.lib import bes_hid_tool
+from mobly_bluetooth.lib import bes_log_pubsub
+from mobly_bluetooth.lib import file_clipper
+from mobly_bluetooth.lib import ssh as ssh_lib
+from mobly_bluetooth.lib import utils
 from typing_extensions import override
-
-from mobly.controllers.bluetooth import bes_device_config
-from mobly.controllers.bluetooth import bluetooth_reference_device_base
-from mobly.controllers.bluetooth.lib import bes_constants as constants
-from mobly.controllers.bluetooth.lib import bes_hid_tool
-from mobly.controllers.bluetooth.lib import bes_log_pubsub
-from mobly.controllers.bluetooth.lib import utils
-from mobly.controllers.bluetooth.lib import audio_recorder
-from mobly.controllers.bluetooth.lib import file_clipper
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
 
 # This is used in the config file located in the test lab's home directory.
 MOBLY_CONTROLLER_CONFIG_NAME = 'BesDevice'
@@ -69,6 +68,9 @@ _AUDIO_RECORDER_NOT_CONFIGURED_MESSAGE = (
     'Audio recorder is not configured. Please set `audio_configs` in the device'
     ' config.'
 )
+# Bound on the housekeeping `pkill` run before a remote process is started, so
+# a network that degrades right then cannot hang the caller.
+_REMOTE_COMMAND_TIMEOUT_SECONDS = 30.0
 _RECORDING_FILE_NOT_FOUND_MESSAGE = (
     'Recording file not found, there might be something wrong with the audio'
     ' recorder. Please check the audio recorder log.'
@@ -83,6 +85,19 @@ _DEFAULT_BAUD_RATE = 1152000
 _SET_TTY_PERMISSIONS_COMMAND = 'sudo chmod a+rw {serial_port}'
 _CONFIG_SERIAL_PORT_COMMAND = 'stty -echo -F {serial_port} speed {speed} raw'
 _READ_SERIAL_COMMAND = 'cat {serial_port}'
+# Kills any serial reader of ours still holding the port, see
+# `_claim_serial_port()`. Anchored so that it matches the reader itself and
+# not the shell this command runs in.
+_CLAIM_SERIAL_PORT_COMMAND = (
+    "pkill -u {username} -f '^cat {serial_port}$' || true"
+)
+# Same for the audio capture device, see `_claim_capture_device()`.
+# Only these PCM name prefixes open a card exclusively; see
+# `_claim_capture_device()` for why the others are left alone.
+_EXCLUSIVE_CAPTURE_DEVICE_PREFIXES = ('hw:', 'plughw:')
+_CLAIM_CAPTURE_DEVICE_COMMAND = (
+    "pkill -u {username} -f '^arecord .* -D {capture_device} ' || true"
+)
 _WRITE_SERIAL_COMMAND = 'echo -e -n "{command}" > {serial_port}'
 _WRITE_SERIAL_COMMAND_ON_HOST = 'echo {command} > {serial_port}'
 
@@ -210,7 +225,7 @@ def create(configs: Sequence[dict[str, Any]]) -> list[BesDevice]:
     A list of BesDevice objects.
 
   Raises:
-    errors.BtReferenceError: Invalid controller configs are given.
+    BesDeviceError: Invalid controller configs are given.
   """
   try:
     device_configs = bes_device_config.from_dicts(configs)
@@ -226,7 +241,7 @@ def create(configs: Sequence[dict[str, Any]]) -> list[BesDevice]:
     )
     try:
       devices.append(BesDevice(config))
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       mobly_utils.concurrent_exec(
           lambda d: d.destroy(),
           param_list=[[d] for d in devices],
@@ -248,8 +263,27 @@ def destroy(devices: Sequence[BesDevice]) -> None:
   for device in devices:
     try:
       device.destroy()
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       logging.exception('Failed to clean up device properly: %s', repr(device))
+
+
+class SshHost(Protocol):
+  """A controller for the host the board is attached to, lending its session.
+
+  `BesDevice` normally opens an SSH session of its own to the host. A caller
+  that already holds a session to the same host, such as the Raspberry Pi
+  controller behind `bes_manager`, can hand itself in instead, so that there
+  is one session and one source of truth about whether it is alive. The host
+  keeps owning the session: `BesDevice` never closes it.
+  """
+
+  @property
+  def ssh(self) -> ssh_lib.SSHProxy:
+    """The host's live SSH session, reconnected by the host if needed."""
+
+  @property
+  def is_ssh_connected(self) -> bool:
+    """True if the host holds a live SSH session, without opening one."""
 
 
 class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
@@ -285,7 +319,10 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
   _fp_private_key: str | None = None
 
   _debug_tag: str
+  # The session this device opened for itself. None in local mode and when
+  # the session is borrowed from `_ssh_host`.
   _ssh: ssh_lib.SSHProxy | None = None
+  _ssh_host: SshHost | None = None
 
   _log_collecting_process: (
       subprocess.Popen[Any] | ssh_lib.RemotePopen | None
@@ -299,10 +336,28 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
   # differ from `config.audio_configs` when the caller overrode them.
   _audio_channels: int | None = None
   _audio_sample_rate: int | None = None
+  # Whether a recording was running when the session was last detached, so
+  # `reconnect()` can bring it back.
+  _audio_recording_was_active: bool = False
+  # True between `detach()` and a successful `reconnect()`.
+  _detached: bool = False
 
-  def __init__(self, config: bes_device_config.DeviceConfig) -> None:
+  def __init__(
+      self,
+      config: bes_device_config.DeviceConfig,
+      ssh_host: SshHost | None = None,
+  ) -> None:
+    """Initializes the device and brings the board up.
+
+    Args:
+      config: The device config.
+      ssh_host: In remote mode, a controller of the host the board is attached
+        to whose SSH session this device should use instead of opening its own.
+        See `SshHost`. Ignored in local mode.
+    """
     self.config = config
     self.bluetooth_address = self.config.bluetooth_address
+    self._ssh_host = ssh_host if self.config.remote_mode else None
 
     # logging.log_path only exists when this is used in a Mobly test run.
     log_path_base = getattr(logging, 'log_path', '/tmp/logs')
@@ -325,7 +380,7 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
       self.start_bes_connection()
       self._init_audio_recorder()
       return
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       self.destroy()
       self.log.warning(
           'Failed to initialize BES device. Start to try hard power on the'
@@ -342,7 +397,7 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
         bes_hid_tool.power_on_local()
       self.start_bes_connection()
       self._init_audio_recorder()
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       self.destroy()
       raise
 
@@ -410,7 +465,11 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
     # Pulling the recording is the only step that needs the remote side, so it
     # is the only one skipped when the session is gone. Everything below it
     # releases local resources and has to run either way.
-    session_is_gone = self._ssh is not None and not self._ssh.is_connected
+    session_is_gone = (
+        self.config.remote_mode
+        and (self._ssh is not None or self._ssh_host is not None)
+        and not self.is_session_connected
+    )
     try:
       if session_is_gone:
         self.log.debug(
@@ -428,15 +487,23 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
     except ssh_lib.SSH_ERRORS:
       self.log.warning('Failed to tear down the BES board.', exc_info=True)
     finally:
-      if self._ssh is not None:
-        try:
-          # Closes the SSH session. The local forward servers outlive a dead
-          # transport, so this runs even when the session is already gone.
-          self._ssh.disconnect()
-        except ssh_lib.SSH_ERRORS:
-          self.log.debug('Failed to close the SSH session.', exc_info=True)
-        finally:
-          self._ssh = None
+      self._close_own_ssh()
+
+  def _close_own_ssh(self) -> None:
+    """Closes the session this device opened for itself, if any.
+
+    A session borrowed from `_ssh_host` is the host's to close. The local
+    forward servers of an own session outlive a dead transport, so this runs
+    even when the session is already gone.
+    """
+    if self._ssh is None:
+      return
+    try:
+      self._ssh.disconnect()
+    except ssh_lib.SSH_ERRORS:
+      self.log.debug('Failed to close the SSH session.', exc_info=True)
+    finally:
+      self._ssh = None
 
   @property
   def is_alive(self) -> bool:
@@ -444,25 +511,88 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
     return self._log_collecting_process is not None
 
   @property
-  def remote_pids(self) -> list[int]:
-    """The PIDs of the processes this device owns on the remote host.
+  def is_session_connected(self) -> bool:
+    """True if this device holds a live SSH session to the remote host.
 
-    `BesDevice` runs on its own SSH session, so when the network to the board
-    drops these processes are orphaned out of reach of the owner's teardown.
-    Their PIDs are the only handle left to reap them, and reaping them matters:
-    a surviving serial reader keeps reading `/dev/ttyUSB*` and corrupts the
-    stream for the reader started by the next `start()`.
+    Unlike reading `ssh`, this never opens a session, which is what makes it
+    safe to call on a device that is detached or whose session just dropped.
+    Always True in local mode, where there is no session to lose.
     """
     if not self.config.remote_mode:
-      return []
-    pids = []
-    if self._log_collecting_process is not None:
-      pids.append(self._log_collecting_process.pid)
-    if self._audio_recorder is not None:
-      recorder_pid = self._audio_recorder.remote_pid
-      if recorder_pid is not None:
-        pids.append(recorder_pid)
-    return pids
+      return True
+    if self._ssh_host is not None:
+      return self._ssh_host.is_ssh_connected
+    return self._ssh is not None and self._ssh.is_connected
+
+  def detach(self) -> None:
+    """Lets go of the SSH session and everything that only lives on it.
+
+    The board is an independent device: its state changes only through BES
+    commands and through power, not through the SSH session that carries the
+    serial stream. So when that session is lost, only the log reader, the
+    publisher and the audio recorder bound to it need to go; the board, and
+    what this object remembers about it (firmware version, build date, the
+    recording settings in use), stay as they are. `reconnect()` brings the
+    session back without re-initializing the board.
+
+    Sends nothing over the session being let go of: it is presumed dead, and
+    a session whose remote FIN is stuck behind a network blackhole still
+    reports itself connected, so opening a channel on it would hang. The
+    remote processes left behind are not killed here either; the serial port
+    and the capture device are claimed again, whatever still holds them, right
+    before `reconnect()` reopens them. An own session is closed locally; a
+    borrowed one is left to its host.
+    """
+    if not self.config.remote_mode:
+      return
+    self._detached = True
+    recorder = self._audio_recorder
+    self._audio_recording_was_active = (
+        recorder is not None and recorder.is_alive
+    )
+    try:
+      self._audio_recorder = None
+      self._close_own_ssh()
+    finally:
+      # Dropped without a kill, see above.
+      self._log_collecting_process = None
+      self.stop_bes_connection()
+
+  def reconnect(self) -> None:
+    """Reopens the SSH session and the log stream after `detach()`.
+
+    Only the session-bound pieces are rebuilt: a new serial log reader, a new
+    publisher and clipper, a new audio recorder, and the recording itself if
+    one was running, at the settings it ran with. No BES command is sent and
+    the board's power is not touched, so the board comes back in exactly the
+    state it was in when the session dropped.
+
+    Raises:
+      Whatever opening the session raised, if the host is still unreachable.
+      The device stays detached, so a later call retries.
+    """
+    if not self.config.remote_mode:
+      return
+    if self.is_alive:
+      return
+    try:
+      self._start_serial_connection()
+      self._generate_output_filename()
+      self._init_audio_recorder()
+      if self._audio_recording_was_active:
+        self.start_audio_recording()
+    except Exception:
+      # Back to detached, so that `is_alive` is False and a later call retries
+      # from the start instead of returning early on a half-built device. An
+      # own session opened on the way is closed too, rather than being handed
+      # to the retry possibly dead.
+      self._audio_recorder = None
+      self._log_collecting_process = None
+      self.stop_bes_connection()
+      self._close_own_ssh()
+      raise
+    self._audio_recording_was_active = False
+    self._detached = False
 
   @property
   def version(self) -> str:
@@ -493,6 +623,10 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
       raise BesDeviceError(_SSH_NOT_REMOTE_MODE_ERROR_MSG)
 
     # TODO: Replace the SSH dep with the SSH module for posix
+    if self._ssh_host is not None:
+      # Never cached here: the host replaces its session when it reconnects,
+      # and a copy taken earlier would outlive that.
+      return self._ssh_host.ssh
     if self._ssh is None:
       ssh_connection = ssh_lib.SSHProxy(
           self.config.hostname,  # pyrefly: ignore[bad-argument-type]
@@ -530,10 +664,55 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
         )
     )
 
+  def _claim_serial_port(self) -> None:
+    """Makes sure no earlier reader of ours still holds the serial port.
+
+    Two readers on one serial port corrupt each other's stream, and a reader
+    can outlive the session that started it: when the network blackholes, this
+    side gives up the session and reconnects while the remote sshd, unaware,
+    keeps the old reader alive until its own TCP times out. Rather than
+    tracking that reader's PID across sessions and reboots, whoever is about
+    to open the port kills whatever reader of ours is on it. Idempotent, and
+    a no-op in the common case where nothing is there.
+    """
+    self.ssh.execute_command(
+        _CLAIM_SERIAL_PORT_COMMAND.format(
+            username=self.config.username,
+            serial_port=re.escape(self.config.serial_port),
+        ),
+        timeout=_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    )
+
+  def _claim_capture_device(self, capture_device: str) -> None:
+    """Makes sure no earlier recorder of ours still holds the capture device.
+
+    Same reasoning as `_claim_serial_port()`, but only for `hw:`/`plughw:`
+    devices. Those open the card directly and exclusively, so a surviving
+    `arecord` keeps it busy and the new one fails to start. Other PCMs, such as
+    `default` or a `dsnoop` device, can be opened by several recorders at once
+    on purpose; a survivor there does not block the new recorder, and killing
+    every `arecord` on that name could stop a recording someone else runs.
+    Several recorders on one host, each on its own sound card, are normal and
+    unaffected either way, since the match is on the device name.
+
+    Args:
+      capture_device: The ALSA capture device the recorder is about to open.
+    """
+    if not capture_device.startswith(_EXCLUSIVE_CAPTURE_DEVICE_PREFIXES):
+      return
+    self.ssh.execute_command(
+        _CLAIM_CAPTURE_DEVICE_COMMAND.format(
+            username=self.config.username,
+            capture_device=re.escape(capture_device),
+        ),
+        timeout=_REMOTE_COMMAND_TIMEOUT_SECONDS,
+    )
+
   def _start_log_streaming(self, local_log_path: pathlib.Path) -> None:
     """Starts streaming the log output from the BES board."""
     command = _READ_SERIAL_COMMAND.format(serial_port=self.config.serial_port)
     if self.config.remote_mode:
+      self._claim_serial_port()
       self._log_collecting_process = self.ssh.start_remote_process(
           command, get_pty=True, output_file_path=str(local_log_path)
       )
@@ -595,7 +774,7 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
       if self._log_collecting_process is not None:
         if not self.config.remote_mode:
           mobly_utils.stop_standing_subprocess(self._log_collecting_process)
-        elif self._ssh is not None and self._ssh.is_connected:
+        elif self.is_session_connected:
           self._log_collecting_process.kill()
         else:
           self.log.debug(
@@ -651,6 +830,8 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
       real_capture_device = raw_name.replace('hw:', 'plughw:', 1)
     else:
       real_capture_device = raw_name
+    if self.config.remote_mode:
+      self._claim_capture_device(real_capture_device)
     self._audio_recorder.start(
         prefix=prefix,
         sample_rate=use_sample_rate,
@@ -699,13 +880,10 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
     Raises:
       BesDeviceError: If the log clipper is not started or no output filename.
     """
-    if (
-        self.config.remote_mode
-        and self._ssh is not None
-        and (not self._ssh.is_connected)
-    ):
+    if not self.is_session_connected or self._detached:
       self.log.warning(
-          'Skipping the BES output excerpts; the SSH session is gone.'
+          'Skipping the BES output excerpts; the SSH session is gone or the'
+          ' device is detached from it.'
       )
       return []
 
@@ -775,11 +953,13 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
             f'Failed to wait for response of the command: {command}'
         )
       data = response.trigger
-      # For pytype check. `response.wait()` ensures data is not None.
+      # `response.wait()` ensures data is not None.
       assert data is not None
       self.log.info(
-          f'Response: {data.status} (error code {data.error_code})'
-          f' {data.message}'
+          'Response: %s (error code %s) %s',
+          data.status,
+          data.error_code,
+          data.message,
       )
       if data.error_code != 0:
         raise BesCommandError(error_code=data.error_code, command=command)
@@ -799,7 +979,7 @@ class BesDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
       )
       info_list.append(build_date)
     self._version = ':'.join(info_list)
-    self.log.info(f'BES firmware version: {self._version}')
+    self.log.info('BES firmware version: %s', self._version)
 
   def _reboot_and_wait_for_completion(
       self,

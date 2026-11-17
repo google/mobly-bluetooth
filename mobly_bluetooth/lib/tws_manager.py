@@ -22,8 +22,7 @@ from mobly import runtime_test_info
 from mobly import utils
 from mobly.controllers.android_device_lib.services import base_service
 
-from mobly.controllers.bluetooth.lib import bes_manager
-
+from mobly_bluetooth.lib import bes_manager
 
 # Avoid directly importing rpi_device, which causes circular
 # dependencies
@@ -86,9 +85,7 @@ class TwsManager(base_service.BaseService):
   bluetooth_address_primary: str
   bluetooth_address_secondary: str
 
-  def __init__(self,
-               device: 'RpiDevice',
-               configs: Config) -> None:
+  def __init__(self, device: 'RpiDevice', configs: Config) -> None:
     """Initializes the instance."""
     self._device = device
     self._configs = configs
@@ -122,11 +119,6 @@ class TwsManager(base_service.BaseService):
     """True if the remote BES connection is alive; False otherwise."""
     # The connection is alive if we are able to read from the serial port.
     return self._primary_device.is_alive or self._secondary_device.is_alive
-
-  @property
-  def remote_pids(self) -> list[int]:
-    """The PIDs this service left running on the Raspberry Pi."""
-    return self._primary_device.remote_pids + self._secondary_device.remote_pids
 
   @property
   def version(self) -> str:
@@ -170,14 +162,34 @@ class TwsManager(base_service.BaseService):
 
     Both boards are stopped even if the first teardown raises. Leaving the
     secondary running would keep `is_alive` True with no way back, and
-    `start()` refuses to run in that state.
+    `start()` refuses to run in that state. Each board's `stop()` is called
+    whether or not it reports itself alive: a paused board does not, yet still
+    holds an instance and the remote processes it parked.
     """
     try:
-      if self._primary_device.is_alive:
-        self._primary_device.stop()
+      self._primary_device.stop()
     finally:
-      if self._secondary_device.is_alive:
-        self._secondary_device.stop()
+      self._secondary_device.stop()
+
+  def pause(self) -> None:
+    """Drops both boards' sessions to the Raspberry Pi, leaving the boards as is.
+
+    See `BesManager.pause()`. Both boards are paused even if the first raises.
+    """
+    try:
+      self._primary_device.pause()
+    finally:
+      self._secondary_device.pause()
+
+  def resume(self) -> None:
+    """Reopens both boards' sessions after `pause()`.
+
+    See `BesManager.resume()`. If the primary cannot be resumed the secondary
+    is left paused too, so the pair keeps reporting itself as not alive and a
+    later resume retries both.
+    """
+    self._primary_device.resume()
+    self._secondary_device.resume()
 
   def __del__(self) -> None:
     """Cleans up the instance."""
@@ -485,8 +497,8 @@ class TwsManager(base_service.BaseService):
         0-100. `level=80` represents that the battery is 80% full.
       right_level: The fake battery level of the right earbud, in the range of
         0-100. If None, the left level will be set for both earbuds.
-      case_level: The fake battery level of the case, in the range of 0-100.
-        If None, there will be no case level set.
+      case_level: The fake battery level of the case, in the range of 0-100. If
+        None, there will be no case level set.
     """
     right_level = right_level if right_level is not None else left_level
     self._primary_device.set_battery_level_tws(

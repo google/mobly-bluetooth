@@ -27,12 +27,11 @@ import immutabledict
 from mobly import runtime_test_info
 from mobly import signals
 from mobly import utils
-
-from mobly.controllers.bluetooth import bes_device
-from mobly.controllers.bluetooth import bluetooth_reference_device_base
-from mobly.controllers.bluetooth import tws_device_config
-from mobly.controllers.bluetooth.lib import bes_constants
-from mobly.controllers.bluetooth import rpi_device
+from mobly_bluetooth.controllers import bes_device
+from mobly_bluetooth.controllers import bluetooth_reference_device_base
+from mobly_bluetooth.controllers import rpi_device
+from mobly_bluetooth.controllers import tws_device_config
+from mobly_bluetooth.lib import bes_constants
 
 # This is used in the config file located in the test lab's home directory.
 MOBLY_CONTROLLER_CONFIG_NAME = 'TwsDevice'
@@ -92,7 +91,7 @@ def create(configs: Sequence[dict[str, Any]]) -> list[TwsDevice]:
     A list of TwsDevice objects.
 
   Raises:
-    errors.BtReferenceError: Invalid controller configs are given.
+    TwsDeviceError: Invalid controller configs are given.
   """
   try:
     device_configs = tws_device_config.from_dicts(configs)
@@ -107,7 +106,7 @@ def create(configs: Sequence[dict[str, Any]]) -> list[TwsDevice]:
     )
     try:
       devices.append(TwsDevice(config))
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       utils.concurrent_exec(
           lambda d: d.destroy(),
           param_list=[[d] for d in devices],
@@ -129,7 +128,7 @@ def destroy(devices: Sequence[TwsDevice]) -> None:
   for device in devices:
     try:
       device.destroy()
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       logging.exception('Failed to clean up device properly: %s', repr(device))
 
 
@@ -184,7 +183,7 @@ class TwsDevice(bluetooth_reference_device_base.BluetoothReferenceDeviceBase):
 
     try:
       self._create_device_instance(config)
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       if config.controller_type == bes_device.MOBLY_CONTROLLER_CONFIG_NAME:
         self._recover_devices(config)
       else:

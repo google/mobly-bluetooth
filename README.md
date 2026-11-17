@@ -65,7 +65,7 @@ This example test connects to the Raspberry Pi and prints its kernel version.
 
 from mobly import base_test
 from mobly import test_runner
-from mobly.controllers.bluetooth import rpi_device
+from mobly_bluetooth.controllers import rpi_device
 
 
 class HelloWorldTest(base_test.BaseTestClass):
@@ -96,17 +96,17 @@ single board, or `TwsDevice` for a pair of boards that act as true wireless
 earbuds. Both are registered through the `bluetooth_reference_device` module:
 
 ```python
-from mobly.controllers.bluetooth import bluetooth_reference_device
+from mobly_bluetooth.controllers import bluetooth_reference_device
 
 ref = self.register_controller(bluetooth_reference_device)[0]
 ```
 
 ## Security
 
-Eligibility for the [Google Open Source Software Vulnerability Rewards
-Program](https://bughunters.google.com/open-source-security) is determined by
-the [Google Open Source Software Vulnerability Reward Program
-Rules](https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules).
+Eligibility for the
+[Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security)
+is determined by the
+[Google Open Source Software Vulnerability Reward Program Rules](https://bughunters.google.com/about/rules/open-source/google-open-source-software-vulnerability-reward-program-rules).
 
 ## License
 

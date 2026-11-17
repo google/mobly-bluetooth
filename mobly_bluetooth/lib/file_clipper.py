@@ -89,7 +89,8 @@ class FileClipper:
     utils.create_dir(str(self._source_file_path.parent))
     self._source_file_path.touch()
     self._file_obj_to_read = io.open(
-        self._source_file_path, 'r', encoding='utf-8', errors='replace')
+        self._source_file_path, 'r', encoding='utf-8', errors='replace'
+    )
     if self._ignore_existing_content:
       self._file_obj_to_read.seek(0, io.SEEK_END)
 
@@ -115,10 +116,12 @@ class FileClipper:
     """
     if self._file_obj_to_read is None:
       raise ClipFileError(
-          'Cannot call `clip_new_content` after this object is closed.')
+          'Cannot call `clip_new_content` after this object is closed.'
+      )
 
     with io.open(
-        clip_file_path, 'w', encoding='utf-8', errors='replace') as out:
+        clip_file_path, 'w', encoding='utf-8', errors='replace'
+    ) as out:
       while True:
         line = self._file_obj_to_read.readline()
         if not line:

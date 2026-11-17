@@ -29,8 +29,8 @@ from mobly import runtime_test_info
 from mobly import utils
 from mobly.controllers.android_device_lib.services import base_service
 
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
-from mobly.controllers.bluetooth.lib import errors
+from mobly_bluetooth.lib import errors
+from mobly_bluetooth.lib import ssh as ssh_lib
 
 # Avoid directly importing rpi_device, which causes circular
 # dependencies.

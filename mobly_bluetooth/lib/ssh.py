@@ -15,6 +15,7 @@
 """A wrapper of paramiko.SSHClient to interact with test machine remotely."""
 
 from __future__ import annotations
+
 from collections.abc import Iterable, Mapping
 import contextlib
 import dataclasses
@@ -31,12 +32,11 @@ import time
 from typing import Optional, cast
 
 from mobly import logger as mobly_logger
+from mobly_bluetooth.lib import channel_file_streamer
+from mobly_bluetooth.lib import ssh_forward as forward
 import paramiko
 from paramiko import channel
 from paramiko import sftp_attr
-
-from mobly.controllers.bluetooth.lib import channel_file_streamer
-from mobly.controllers.bluetooth.lib import ssh_forward as forward
 
 
 _SFTP_NOT_CONNECTED_ERROR_MESSAGE = (
@@ -55,6 +55,7 @@ _WAIT_PROC_EXIT_TIMEOUT_SEC = 30
 @dataclasses.dataclass
 class CommandResults:
   """A container to collect full command results."""
+
   exit_code: int = 0
   output: str = ''
   error: str = ''
@@ -69,20 +70,18 @@ class Error(Exception):
 
 class SSHRemoteError(Error):
   """Raised when a ssh operation encounters an error."""
-  pass
 
 
 class RemotePathDoesNotExistError(Error):
   """Raised when a path doesn't exist on the remote machine."""
-  pass
 
 
 class ExecuteCommandError(Error):
   """Raised when a ssh command encounters an error.
 
   Attributes:
-    command_results: The full command results including: exit code, stdout,
-      and stderr.
+    command_results: The full command results including: exit code, stdout, and
+      stderr.
     command: The command that was executed.
   """
 
@@ -100,8 +99,9 @@ class ExecuteCommandError(Error):
   command_results: CommandResults = None  # pyrefly: ignore[bad-assignment]
   command: str = ''
 
-  def __init__(self, ssh: SSHProxy, command: str,
-               command_results: CommandResults) -> None:
+  def __init__(
+      self, ssh: SSHProxy, command: str, command_results: CommandResults
+  ) -> None:
     message = self._COMMAND_EXCEPTION_TEMPLATE.format(
         command=command,
         return_code=command_results.exit_code,
@@ -122,8 +122,7 @@ class SFTPAlreadyConnectedError(Error):
 
 
 class RemoteTimeoutError(Error):
-  """Raised when a remote process did not complete in its given time.."""
-  pass
+  """Raised when a remote process did not complete in its given time."""
 
 
 class PortForwardingError(Error):
@@ -167,7 +166,7 @@ class SSHProxy:
       keyfile: a local path to a private key file.
       allow_agent: allow use of ssh-agent for underlying ssh_client object.
       proxy_command: the ProxyCommand string to use when connecting to the
-      remote machine.
+        remote machine.
     """
     self._hostname = hostname
     self._username = username
@@ -186,9 +185,10 @@ class SSHProxy:
     self.log = mobly_logger.PrefixLoggerAdapter(
         logging.getLogger(),
         {
-            mobly_logger.PrefixLoggerAdapter.EXTRA_KEY_LOG_PREFIX:
+            mobly_logger.PrefixLoggerAdapter.EXTRA_KEY_LOG_PREFIX: (
                 f'[SSHProxy|{self._hostname}:{self._ssh_port}]'
-        }
+            )
+        },
     )
     self.ssh_client = paramiko.SSHClient()
     self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -226,7 +226,7 @@ class SSHProxy:
   ) -> None:
     """Connects to the test machine.
 
-    Arguments:
+    Args:
       timeout: Connection timeout in seconds.
       banner_timeout: Timeout for the SSH banner to be presented.
       open_sftp: Whether to open a SFTP session after connection established.
@@ -308,8 +308,10 @@ class SSHProxy:
       PortForwardingError: Raised if trying to forward different remote ports
         to the same local port.
     """
+
     class SubHandler(forward.Handler):
       """Configures the local forward server."""
+
       chain_host = self._hostname
       chain_port = remote_port
       ssh_transport = self.ssh_client.get_transport()
@@ -324,24 +326,32 @@ class SSHProxy:
       if remote_port == forwarded_remote_port:
         return local_port
 
-      error_string = (f'Local port {local_port} is in use for forwarding '
-                      f'remote port {forwarded_remote_port}. Please choose '
-                      'an unused local port, or simply set it to 0.')
+      error_string = (
+          f'Local port {local_port} is in use for forwarding '
+          f'remote port {forwarded_remote_port}. Please choose '
+          'an unused local port, or simply set it to 0.'
+      )
       raise PortForwardingError(ssh=self, message=error_string)
 
-    port_forward_server = (
-        forward.ForwardServer(('127.0.0.1', local_port), SubHandler))
+    port_forward_server = forward.ForwardServer(
+        ('127.0.0.1', local_port), SubHandler
+    )
 
     # Start the server on a separate thread.
     thread = threading.Thread(
-        target=port_forward_server.serve_forever, daemon=True)
+        target=port_forward_server.serve_forever, daemon=True
+    )
     thread.start()
 
     _, forwarded_local_port = port_forward_server.server_address  # pyrefly: ignore[bad-unpacking]
     self._port_forward_servers[forwarded_local_port] = port_forward_server
 
-    self.log.debug('Forwarded address %s:%d to local port %d', self._hostname,
-                   remote_port, forwarded_local_port)
+    self.log.debug(
+        'Forwarded address %s:%d to local port %d',
+        self._hostname,
+        remote_port,
+        forwarded_local_port,
+    )
     return forwarded_local_port
 
   def stop_port_forwarding(self, local_port: int) -> None:
@@ -355,18 +365,22 @@ class SSHProxy:
         which isn't being forwarding.
     """
     if local_port not in self._port_forward_servers:
-      error_message = (f'Trying to stop forwarding to local port {local_port} '
-                       "which isn't being forwarding.")
+      error_message = (
+          f'Trying to stop forwarding to local port {local_port} '
+          "which isn't being forwarding."
+      )
       raise PortForwardingError(ssh=self, message=error_message)
 
     server = self._port_forward_servers.pop(local_port)
     server.shutdown()
     server.server_close()
 
-  def push_dir(self,
-               local_src_dir: str,
-               remote_dest_dir: str,
-               change_permission: bool = False) -> None:
+  def push_dir(
+      self,
+      local_src_dir: str,
+      remote_dest_dir: str,
+      change_permission: bool = False,
+  ) -> None:
     """Pushes local directory recursively to the remote machine.
 
     Args:
@@ -381,16 +395,18 @@ class SSHProxy:
         remote_dest_dir,
     )
     self.make_dirs(remote_dest_dir)
-    for (dir_path, _, file_names_list) in os.walk(local_src_dir):
+    for dir_path, _, file_names_list in os.walk(local_src_dir):
       for file_name in file_names_list:
         local_file = os.path.join(dir_path, file_name)
         self.push(
             local_file,
             local_file.replace(local_src_dir, remote_dest_dir, 1),
-            change_permission=change_permission)
+            change_permission=change_permission,
+        )
 
-  def move_dir(self, remote_current_location: str,
-               remote_destination_location: str) -> None:
+  def move_dir(
+      self, remote_current_location: str, remote_destination_location: str
+  ) -> None:
     """Renames a folder on the remote machine.
 
     Args:
@@ -409,10 +425,12 @@ class SSHProxy:
       )
     self._sftp.rename(remote_current_location, remote_destination_location)
 
-  def push(self,
-           local_src_filename: str,
-           remote_dest_filename: str,
-           change_permission: bool = False) -> None:
+  def push(
+      self,
+      local_src_filename: str,
+      remote_dest_filename: str,
+      change_permission: bool = False,
+  ) -> None:
     """Pushes local file to the remote machine.
 
     Args:
@@ -435,8 +453,9 @@ class SSHProxy:
     self._sftp.put(local_src_filename, remote_dest_filename)
     # Restore file permissions in linux and mac
     if change_permission:
-      self._sftp.chmod(remote_dest_filename,
-                       (os.stat(local_src_filename).st_mode & 0o777))
+      self._sftp.chmod(
+          remote_dest_filename, (os.stat(local_src_filename).st_mode & 0o777)
+      )
 
   def pull(self, remote_src_filepath: str, local_dest_filepath: str) -> None:
     """Pulls a remote file from the client as a local file.
@@ -471,8 +490,9 @@ class SSHProxy:
         remote_file.prefetch()
         shutil.copyfileobj(remote_file, local_file)
 
-  def pull_to_directory(self, remote_src_filepath: str,
-                        local_directory: str) -> None:
+  def pull_to_directory(
+      self, remote_src_filepath: str, local_directory: str
+  ) -> None:
     """Pulls a remote file from the client into a local directory.
 
     Args:
@@ -483,8 +503,8 @@ class SSHProxy:
     self.pull(remote_src_filepath, os.path.join(local_directory, filename))
 
   def _get_file_paths_in_remote_directory(
-      self,
-      remote_dir: pathlib.PurePosixPath) -> Iterable[pathlib.PurePosixPath]:
+      self, remote_dir: pathlib.PurePosixPath
+  ) -> Iterable[pathlib.PurePosixPath]:
     """Yields the path to all files within a remote directory recursively.
 
     Args:
@@ -508,8 +528,9 @@ class SSHProxy:
       else:
         yield entry_path
 
-  def pull_remote_directory(self, remote_src_dir: str,
-                            local_dest_dir: str) -> list[str]:
+  def pull_remote_directory(
+      self, remote_src_dir: str, local_dest_dir: str
+  ) -> list[str]:
     """Pulls all files within a remote directory to local directory recursively.
 
     Args:
@@ -521,10 +542,12 @@ class SSHProxy:
     """
     pulled_files = []
     for remote_filepath in self._get_file_paths_in_remote_directory(
-        pathlib.PurePosixPath(remote_src_dir)):
+        pathlib.PurePosixPath(remote_src_dir)
+    ):
       # Use Path.joinpath to avoid messing up the forward/backward slashes.
       local_filepath = pathlib.Path(local_dest_dir).joinpath(
-          remote_filepath.relative_to(remote_src_dir))
+          remote_filepath.relative_to(remote_src_dir)
+      )
       self.pull(str(remote_filepath), str(local_filepath))
       pulled_files.append(str(local_filepath))
     return pulled_files
@@ -549,10 +572,13 @@ class SSHProxy:
     if command_results.exit_code:
       error_string = (
           f'exit code: {command_results.exit_code}, '
-          f'output {command_results.output}, error: {command_results.error}')
+          f'output {command_results.output}, error: {command_results.error}'
+      )
       if 'Device or resource busy' in command_results.error:
-        raise IOError('Likely a process is still using the file that '
-                      f'you are trying to delete: {error_string}')
+        raise IOError(
+            'Likely a process is still using the file that '
+            f'you are trying to delete: {error_string}'
+        )
       else:
         raise SSHRemoteError(self, error_string)
 
@@ -570,7 +596,8 @@ class SSHProxy:
       self.execute_command(
           f'rm -rf "{remote_dir}"',
           ignore_error=True,
-          command_results_collector=command_results)
+          command_results_collector=command_results,
+      )
       return command_results
 
     self.log.debug('Remote folder to remove %s does not exist', remote_dir)
@@ -722,7 +749,8 @@ class SSHProxy:
     if not self.exists(remote_path):
       raise RemotePathDoesNotExistError(
           self,
-          f'The file "{remote_path}" to change the permissions does not exist.')
+          f'The file "{remote_path}" to change the permissions does not exist.',
+      )
 
     self.log.debug('chmod %o %r', mode, remote_path)
     if self._sftp is None:
@@ -737,7 +765,8 @@ class SSHProxy:
       command: str,
       timeout: Optional[float] = None,
       ignore_error: bool = False,
-      command_results_collector: Optional[CommandResults] = None) -> str:
+      command_results_collector: Optional[CommandResults] = None,
+  ) -> str:
     """Executes the command in the remote machine.
 
     The command waits for the remote process to complete and returns the
@@ -788,12 +817,10 @@ class SSHProxy:
     return command_result.output.strip()
 
   def execute_command_async(
-      self,
-      command: str,
-      timeout: Optional[int] = None,
-      get_pty: bool = False
-  ) -> tuple[channel.ChannelStdinFile, channel.ChannelFile,
-             channel.ChannelStderrFile]:
+      self, command: str, timeout: Optional[int] = None, get_pty: bool = False
+  ) -> tuple[
+      channel.ChannelStdinFile, channel.ChannelFile, channel.ChannelStderrFile
+  ]:
     """Executes the command in the remote machine.
 
     This method returns immediately. It doesn't wait for the remote process to
@@ -817,11 +844,12 @@ class SSHProxy:
     """
     self.log.debug('Running command on remote machine: %s', command)
     return self.ssh_client.exec_command(
-        command, timeout=timeout, get_pty=get_pty)
+        command, timeout=timeout, get_pty=get_pty
+    )
 
-  def execute_commands(self,
-                       commands: Iterable[str],
-                       sleep_interval: int = 0) -> None:
+  def execute_commands(
+      self, commands: Iterable[str], sleep_interval: int = 0
+  ) -> None:
     """Executes batch of commands.
 
     Args:
@@ -839,7 +867,8 @@ class SSHProxy:
       environment: Optional[Mapping[str, str]] = None,
       timeout: Optional[int] = None,
       get_pty: bool = False,
-      output_file_path: Optional[str] = None) -> RemotePopen:
+      output_file_path: Optional[str] = None,
+  ) -> RemotePopen:
     """Executes a command and returns a RemotePopen object.
 
     Args:
@@ -860,15 +889,17 @@ class SSHProxy:
     session = self.ssh_client.get_transport().open_session()
     if get_pty:
       session.get_pty()
-    self.log.debug('Starting remote process: %s, environment=%s', command,
-                   environment)
+    self.log.debug(
+        'Starting remote process: %s, environment=%s', command, environment
+    )
     return RemotePopen(
         self,
         session,
         command,
         environment,
         timeout,
-        output_file_path=output_file_path)
+        output_file_path=output_file_path,
+    )
 
   def get_remote_file_contents(self, remote_file: str) -> str:
     """Gets the content of a remote file.
@@ -887,13 +918,15 @@ class SSHProxy:
       raise RemotePathDoesNotExistError(
           self,
           f'The file to get the contents of ({remote_file}) does not exist on '
-          'the remote machine.')
+          'the remote machine.',
+      )
 
     try:
       stdout = self.execute_command(f'cat "{remote_file}"')
     except ExecuteCommandError as e:
-      raise SSHRemoteError(self,
-                           f'Error getting remote file: {remote_file}.') from e
+      raise SSHRemoteError(
+          self, f'Error getting remote file: {remote_file}.'
+      ) from e
 
     return stdout
 
@@ -909,13 +942,15 @@ class RemotePopen:
     pid: the remote process id on the remote machine.
   """
 
-  def __init__(self,
-               client: SSHProxy,
-               session: channel.Channel,
-               command: str,
-               environment: Optional[Mapping[str, str]] = None,
-               timeout: Optional[int] = None,
-               output_file_path: Optional[str] = None) -> None:
+  def __init__(
+      self,
+      client: SSHProxy,
+      session: channel.Channel,
+      command: str,
+      environment: Optional[Mapping[str, str]] = None,
+      timeout: Optional[int] = None,
+      output_file_path: Optional[str] = None,
+  ) -> None:
     """Initializes the RemotePopen instance.
 
     Args:
@@ -956,7 +991,8 @@ class RemotePopen:
     self._client.log.debug('The remote process(pid=%d) started.', self.pid)
 
     self._output_streamer: Optional[
-        channel_file_streamer.ChannelFileStreamer] = None
+        channel_file_streamer.ChannelFileStreamer
+    ] = None
     if output_file_path is not None:
       self._start_streaming_remote_proc_output(output_file_path)
 
@@ -965,12 +1001,14 @@ class RemotePopen:
     logger = mobly_logger.PrefixLoggerAdapter(
         self._client.log,
         {
-            mobly_logger.PrefixLoggerAdapter.EXTRA_KEY_LOG_PREFIX:
+            mobly_logger.PrefixLoggerAdapter.EXTRA_KEY_LOG_PREFIX: (
                 f'[RemoteProcess({self.pid})]'
+            )
         },
     )
     self._output_streamer = channel_file_streamer.ChannelFileStreamer(
-        self._stdout, output_file_path, logger)
+        self._stdout, output_file_path, logger
+    )
     self._output_streamer.start()
 
   def recv_ready(self) -> bool:
@@ -1045,14 +1083,16 @@ class RemotePopen:
       return ('', '')
 
     try:
-      return (self._stdout.read().decode('utf-8'),
-              self._stderr.read().decode('utf-8'))
+      return (
+          self._stdout.read().decode('utf-8'),
+          self._stderr.read().decode('utf-8'),
+      )
     except socket.timeout as e:
       # socket.timeout is thrown during a read() operation when the timeout
       # given to the execute_command() function is exceeded.
       raise RemoteTimeoutError(
           self._client,
-          f'Command did not complete in {self._session.gettimeout()} seconds.'
+          f'Command did not complete in {self._session.gettimeout()} seconds.',
       ) from e
 
   def terminate(
@@ -1192,11 +1232,12 @@ class RemotePopen:
       self._client.execute_command(
           f'kill -{signal_id} {self.pid}',
           timeout=timeout,
-          command_results_collector=command_results)
+          command_results_collector=command_results,
+      )
     except socket.timeout as e:
       raise RemoteTimeoutError(
           self._client,
-          f'The kill command timed out after {self._wait_timeout_sec} seconds.'
+          f'The kill command timed out after {self._wait_timeout_sec} seconds.',
       ) from e
     except socket.error as e:
       raise SSHRemoteError(
@@ -1213,9 +1254,11 @@ class RemotePopen:
         self.poll(),
     )
 
-  def wait(self,
-           ignore_error: bool = False,
-           command_results_collector: Optional[CommandResults] = None) -> str:
+  def wait(
+      self,
+      ignore_error: bool = False,
+      command_results_collector: Optional[CommandResults] = None,
+  ) -> str:
     """Waits until this process has ended and returns the command results.
 
     Args:
@@ -1257,7 +1300,7 @@ class RemotePopen:
       deadline_time = timeout + time.perf_counter()
 
     while not self._session.exit_status_ready():
-      if (deadline_time is not None and time.perf_counter() > deadline_time):
+      if deadline_time is not None and time.perf_counter() > deadline_time:
         return False
       time.sleep(1)
 

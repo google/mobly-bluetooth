@@ -56,11 +56,9 @@ from typing import Any, TypeAlias
 
 import immutabledict
 from mobly import signals
-
-from mobly.controllers.bluetooth import bes_device
-from mobly.controllers.bluetooth import bluetooth_reference_device_base
-from mobly.controllers.bluetooth import tws_device
-
+from mobly_bluetooth.controllers import bes_device
+from mobly_bluetooth.controllers import bluetooth_reference_device_base
+from mobly_bluetooth.controllers import tws_device
 
 # This is used in the config file located in the test lab's home directory.
 MOBLY_CONTROLLER_CONFIG_NAME = 'BluetoothReferenceDevice'
@@ -127,7 +125,7 @@ def create(
       devices.extend(
           _SUPPORTED_DEVICE_CLASSES[config['controller_name']].create([config])
       )
-    except Exception as e:  # pylint: disable=broad-except
+    except Exception as e:
       raise Error(
           'Failed to create Bluetooth reference device class'
           f' `{config["controller_name"]}`'
@@ -145,7 +143,7 @@ def destroy(devices: Sequence[BluetoothReferenceDeviceBase]) -> None:
   for device in devices:
     try:
       device.destroy()
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       logging.exception('Failed to clean up device properly: %s', repr(device))
 
 

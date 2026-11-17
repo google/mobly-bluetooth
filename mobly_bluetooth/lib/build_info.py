@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 import re
 
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
+from mobly_bluetooth.lib import ssh as ssh_lib
 
 
 @dataclasses.dataclass
@@ -38,6 +38,7 @@ class BuildInfo:
     kernel_version: Version of the Linux kernel.
     total_memory_gb: Total physical memory, in GBytes.
   """
+
   # Device information
   serial: str
   model: str
@@ -70,18 +71,15 @@ class BuildInfo:
         model=_get_property(device_info, 'Model'),
         hardware=_get_property(device_info, 'Hardware'),
         revision_code=_get_property(device_info, 'Revision'),
-
         # Parses CPU information
         number_of_cpus=int(_get_property(cpu_info, r'CPU\(s\)')),
         cpu_model_name=_get_property(cpu_info, 'Model name'),
         max_cpu_frequency_ghz=_frequency_to_ghz(
             _get_property(cpu_info, 'CPU max MHz')
         ),
-
         # Parses OS information
         os_name=_get_property(os_info, 'Operating System'),
         kernel_version=_get_property(os_info, 'Kernel'),
-
         # Parses memory information
         total_memory_gb=_memory_to_gb(_get_property(memory_info, 'MemTotal')),
     )

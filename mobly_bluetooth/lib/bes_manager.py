@@ -20,14 +20,14 @@ from typing import Any, TypeAlias
 from mobly import runtime_test_info
 from mobly.controllers.android_device_lib.services import base_service
 
-from mobly.controllers.bluetooth import bes_device
-from mobly.controllers.bluetooth import bes_device_config
-from mobly.controllers.bluetooth import bluetooth_reference_device_base
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
+from mobly_bluetooth.controllers import bes_device
+from mobly_bluetooth.controllers import bes_device_config
+from mobly_bluetooth.controllers import bluetooth_reference_device_base
+from mobly_bluetooth.lib import ssh as ssh_lib
 
 # Avoid directly importing rpi_device, which causes circular
 # dependencies
-rpi_device = Any
+_RpiDevice: TypeAlias = Any
 
 # Error messages
 _ALREADY_STARTED_MESSAGE = 'BES manager has already started.'
@@ -77,31 +77,32 @@ class BesManager(base_service.BaseService):
   """
 
   _bes_device_instance: bes_device.BesDevice | None = None
+  # True between `pause()` and `resume()`: the instance is kept, but it holds
+  # no session to the board's host.
+  _is_paused: bool = False
+  # `RpiDevice.ssh_generation` at the time the board's serial log
+  # reader was last started. A different value means the controller has
+  # replaced its session since, and the reader died with the old one.
+  _bound_ssh_generation: int = -1
 
   bluetooth_address: str
 
   def __init__(
       self,
-      device: 'rpi_device.RpiDevice',  # pyrefly: ignore[missing-attribute]
+      device: _RpiDevice,
       configs: Config,
   ) -> None:
     """Initializes the instance."""
     self._device = device
     self._configs = configs
     self._bes_device_instance = None
+    self._is_paused = False
     self.bluetooth_address = self._configs.bluetooth_address
 
   @property
   def is_alive(self) -> bool:
-    """True if the remote BES connection is alive; False otherwise."""
-    return self._bes_device_instance is not None
-
-  @property
-  def remote_pids(self) -> list[int]:
-    """The PIDs this service left running on the Raspberry Pi."""
-    if self._bes_device_instance is None:
-      return []
-    return self._bes_device_instance.remote_pids
+    """True if the BES manager is running and attached to the board's host."""
+    return self._bes_device_instance is not None and not self._is_paused
 
   @property
   def version(self) -> str:
@@ -120,14 +121,23 @@ class BesManager(base_service.BaseService):
   def start(self) -> None:
     """Starts the BES manager.
 
-    This method starts the underlaying BesDevice instance.
+    This method starts the underlaying BesDevice instance, which initializes
+    the board. A paused manager is started afresh rather than resumed: a
+    caller that asks for a start rather than a resume, such as the device
+    coming back from a reboot that power-cycled the board, needs the board
+    initialized again.
 
     Raises:
       Error: If the BES manager has already started.
     """
     if self._bes_device_instance is not None:
-      raise Error(_ALREADY_STARTED_MESSAGE)
+      if not self._is_paused:
+        raise Error(_ALREADY_STARTED_MESSAGE)
+      self.stop()
 
+    # The board shares the controller's SSH session rather than opening one of
+    # its own, so there is a single session to the Raspberry Pi and a single
+    # answer to whether it is alive; see `bes_device.SshHost`.
     self._bes_device_instance = bes_device.BesDevice(
         bes_device_config.DeviceConfig(
             bluetooth_address=self._configs.bluetooth_address,  # pyrefly: ignore[missing-attribute]
@@ -140,7 +150,9 @@ class BesManager(base_service.BaseService):
             keyfile=self._device.config.keyfile,
             proxy_command=self._device.config.proxy_command,
         ),
+        ssh_host=self._device,
     )
+    self._bound_ssh_generation = self._device.ssh_generation
 
   def stop(self) -> None:
     """Stops the running BES manager.
@@ -160,6 +172,42 @@ class BesManager(base_service.BaseService):
       )
     finally:
       self._bes_device_instance = None
+      self._is_paused = False
+
+  def pause(self) -> None:
+    """Drops the SSH session to the board's host, leaving the board as it is.
+
+    The board only changes state through BES commands and through power, so
+    losing the session that carries its serial stream is not a reason to
+    re-initialize it. Pausing keeps the `BesDevice` and everything it knows
+    about the board, and `resume()` only reopens the session.
+    """
+    if self._bes_device_instance is None or self._is_paused:
+      return
+    try:
+      self._bes_device_instance.detach()
+    except ssh_lib.SSH_ERRORS:
+      self._device.log.warning(
+          'Failed to detach from the BES devboard.', exc_info=True
+      )
+    finally:
+      self._is_paused = True
+
+  def resume(self) -> None:
+    """Reopens the session to the board's host after `pause()`.
+
+    Raises:
+      Whatever reconnecting raised, if the host is still unreachable. The
+      manager stays paused, so a later call retries.
+    """
+    if self._bes_device_instance is None:
+      self.start()
+      return
+    if not self._is_paused:
+      return
+    self._bes_device_instance.reconnect()
+    self._bound_ssh_generation = self._device.ssh_generation
+    self._is_paused = False
 
   def __del__(self) -> None:
     """Cleans up the instance."""
@@ -179,60 +227,70 @@ class BesManager(base_service.BaseService):
     Raises:
       Error: If the log clipper is uninitialized.
     """
-    if self._bes_device_instance is None:
+    if self._bes_device_instance is None or self._is_paused:
+      # A paused board has let go of its log reader and clipper; there is
+      # nothing to excerpt until it is resumed.
       return []
 
     return self._bes_device_instance.create_output_excerpts(test_info)
 
-  def _needs_recovery(self, instance: bes_device.BesDevice | None) -> bool:
-    """Whether `instance` can no longer reach the board and must be replaced.
-
-    Args:
-      instance: The board instance a caller was about to use, or None if the
-        manager is not running.
+  def _needs_recovery(self) -> bool:
+    """Whether the board's serial stream is no longer carried by a live session.
 
     Returns:
-      True if the board's own SSH session is gone, or if the manager is not
-      running only because an earlier recovery could not reconnect.
+      True if the manager is paused, the controller's session is dead, or the
+      controller has replaced its session since this board's log reader was
+      started (another caller's recovery does that), which left the reader
+      behind on the old one. A manager that is not running only because an
+      earlier recovery could not reconnect reports True as well.
     """
-    if instance is None:
+    if self._bes_device_instance is None:
       return self._device.has_pending_recovery
-    return not instance.ssh.is_connected
+    return (
+        self._is_paused
+        or not self._device.is_ssh_connected
+        or self._device.ssh_generation != self._bound_ssh_generation
+    )
 
   def _recover_if_session_lost(self) -> None:
-    """Recovers the device if the board's own SSH session is gone.
+    """Recovers the device if the session carrying the board's stream is gone.
 
-    `BesDevice` talks to the board over its own SSH session, separate from
-    the Raspberry Pi controller's, and never checks that session before using
-    it. When the network to the Raspberry Pi drops, that session dies with the
-    controller's, but nothing would notice until a BES command failed on it,
-    and every later command would fail the same way. Recovery goes through
-    the controller rather than reopening only this board's session, because
-    the controller also reaps the serial port reader the old session left
-    running, which would otherwise corrupt the new reader's stream.
+    The board talks over the controller's SSH session. When that session
+    drops, nothing would notice until a BES command failed on it, and every
+    later command would fail the same way, so the check happens before each
+    command instead. Recovery goes through the controller, because only it
+    can reopen the session, and it also reaps the serial port reader the old
+    session left running, which would otherwise corrupt the new reader's
+    stream.
+
+    The board itself is left alone throughout: only the session is replaced,
+    so the board comes back in the state it was in before the drop.
     """
-    instance = self._bes_device_instance
-    if not self._needs_recovery(instance):
-      return
+    # The check runs under the lock: a recovery another caller is in the
+    # middle of, e.g. for the other board of a TWS pair, is then waited out
+    # and seen in full, rather than racing a check made moments before it
+    # replaced the session. Uncontended, the lock costs nothing.
     with self._device.recovery_lock:
-      # Both boards of a TWS pair notice the same lost session. Whoever got
-      # the lock first already replaced this board's instance.
-      if self._bes_device_instance is not instance:
+      if not self._needs_recovery():
         return
       self._device.log.warning(
           'The SSH session to BES board %s is gone, recovering the device'
           ' before sending the next command.',
           self.bluetooth_address,
       )
-      # Hand over this board's remote processes: a manager used on its own is
-      # not registered on the device, so the recovery would not find them, and
-      # `stop()` on a dead session cannot reach them either.
-      self._device.recover_services(orphan_remote_pids=self.remote_pids)
-      if self._bes_device_instance is instance and instance is not None:
-        # Recovery restarts only the services registered on the device. A
-        # manager used on its own has to restart itself.
+      self._device.recover_services()
+      if not self._needs_recovery():
+        return
+      # Recovery brings back only the services registered on the device. A
+      # manager used on its own has to do it itself, by the same rule the
+      # device applies: resume on the board state that was there, unless the
+      # host rebooted meanwhile, which power-cycled the board too.
+      if self._device.rebooted_since_last_session:
         self.stop()
         self.start()
+      else:
+        self.pause()
+        self.resume()
 
   def __getattr__(self, name):
     """Wrapper to turn method calls into BES API calls."""

@@ -21,8 +21,7 @@ import enum
 from typing import Any
 
 from mobly import runtime_test_info
-
-from mobly.controllers.bluetooth.lib import utils
+from mobly_bluetooth.lib import utils
 
 
 @dataclasses.dataclass
@@ -54,6 +53,7 @@ class BluetoothInfo:
 @enum.unique
 class AncMode(enum.IntEnum):
   """The ANC mode of the device."""
+
   OFF = 0
   ON = 1
   TRANSPARENT = 2

@@ -20,10 +20,10 @@ import logging
 import os
 import socket
 import threading
+from typing import Any
 
 from mobly import utils
 from paramiko import channel
-
 
 # The default timeout seconds for each channel read in RemotePopen
 CHANNEL_READ_DEFAULT_TIMEOUT_SEC = 5
@@ -39,8 +39,12 @@ class ChannelFileStreamer:
   channel file object and append to a host file.
   """
 
-  def __init__(self, channel_file_obj: channel.ChannelFile,
-               output_file_path: str, logger: logging.LoggerAdapter) -> None:
+  def __init__(
+      self,
+      channel_file_obj: channel.ChannelFile,
+      output_file_path: str,
+      logger: logging.LoggerAdapter[Any],
+  ) -> None:
     """Initializes the ChannelFileStreamer instance.
 
     Args:
@@ -62,29 +66,36 @@ class ChannelFileStreamer:
 
     self._lock = threading.Lock()
     self._executor = futures.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix='ChannelFileStreamer')
+        max_workers=1, thread_name_prefix='ChannelFileStreamer'
+    )
     self._job = None
 
-  def _stream_channel_file_output(self, channel_file_obj: channel.ChannelFile,
-                                  output_file_obj: io.TextIOWrapper,
-                                  lock: threading.Lock,
-                                  logger: logging.LoggerAdapter) -> None:
+  def _stream_channel_file_output(
+      self,
+      channel_file_obj: channel.ChannelFile,
+      output_file_obj: io.TextIOWrapper,
+      lock: threading.Lock,
+      logger: logging.LoggerAdapter[Any],
+  ) -> None:
     """Streams the channel file output to a host file object."""
-    logger.debug('Starting to stream the output to host file %s',
-                 output_file_obj.name)
+    logger.debug(
+        'Starting to stream the output to host file %s', output_file_obj.name
+    )
 
     while True:
       with lock:
         if output_file_obj.closed:
           logger.debug(
               'Stopping log streaming because the target output file object '
-              'is already closed.')
+              'is already closed.'
+          )
           break
 
       if channel_file_obj.closed:
         logger.debug(
             'Stopping log streaming because the input channel file object '
-            'is already closed.')
+            'is already closed.'
+        )
         break
 
       try:
@@ -93,14 +104,18 @@ class ChannelFileStreamer:
         if not output:
           logger.debug(
               'Stopping log streaming because got EOF from the input channel '
-              'file object.')
+              'file object.'
+          )
           break
 
         try:
           output = output.decode('utf-8')
         except UnicodeDecodeError:
-          logger.error('Ignoring the channel file output decoding error. The '
-                       'output failed to decode is: "%s"', output)
+          logger.error(
+              'Ignoring the channel file output decoding error. The '
+              'output failed to decode is: "%s"',
+              output,
+          )
           continue
 
         with lock:
@@ -108,7 +123,8 @@ class ChannelFileStreamer:
             logger.debug(
                 'Stopping log streaming because the target output file '
                 'object is already closed. Ignoring the unwritten log: %s',
-                output)
+                output,
+            )
             break
 
           output_file_obj.write(output)
@@ -117,18 +133,23 @@ class ChannelFileStreamer:
       except socket.timeout:
         logger.debug('Ignoring the timeout error when waiting for the output.')
 
-    logger.debug('Finished streaming the output to host file %s',
-                 output_file_obj.name)
+    logger.debug(
+        'Finished streaming the output to host file %s', output_file_obj.name
+    )
 
   def start(self) -> None:
     """Starts streaming the channel file output."""
-    self._job = self._executor.submit(self._stream_channel_file_output,
-                                      self._channel_file_obj,
-                                      self._output_file_obj, self._lock,
-                                      self._log)
+    self._job = self._executor.submit(
+        self._stream_channel_file_output,
+        self._channel_file_obj,
+        self._output_file_obj,
+        self._lock,
+        self._log,
+    )
 
-  def stop(self,
-           timeout_sec: int = CHANNEL_FILE_STREAMER_STOP_TIMEOUT_SEC) -> None:
+  def stop(
+      self, timeout_sec: int = CHANNEL_FILE_STREAMER_STOP_TIMEOUT_SEC
+  ) -> None:
     """Stops streaming the channel file output.
 
     If the streaming thread exited with an exception, this will raise that

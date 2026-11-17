@@ -32,23 +32,23 @@ from typing import Optional, Union
 
 from dateutil.parser import parse as parse_date
 
-
 _LOGCAT_LINE_REGEX = re.compile(
     r'(?P<time>\d\d-\d\d \d\d:\d\d:\d\d.\d\d\d)\s+'
     r'(?P<pid>\d+)\s+(?P<tid>\d+)\s+(?P<level>[VDIWEFS])\s+'
-    r'(?P<tag>.+?)\s*:\s+(?P<message>.*)')
-
+    r'(?P<tag>.+?)\s*:\s+(?P<message>.*)'
+)
 
 LogcatData = collections.namedtuple(
-    'LogcatData', ['time', 'pid', 'tid', 'level', 'tag', 'message',
-                   'host_time', 'line'])
+    'LogcatData',
+    ['time', 'pid', 'tid', 'level', 'tag', 'message', 'host_time', 'line'],
+)
 
 
 class LogcatError(Exception):
   """Logcat publisher or subscriber error."""
 
 
-class LogcatPublisher(object):
+class LogcatPublisher:
   """Implementation of an ADB logcat publisher class.
 
   The logcat publisher attaches to an existing logcat file, specified by the
@@ -77,12 +77,12 @@ class LogcatPublisher(object):
     See details at
     https://bugs.launchpad.net/ubuntu/+source/linux/+bug/882147
 
-  Args:
+  Attributes:
     logcat_file_path: local path of ADB logcat file.
   """
 
   def __init__(self, logcat_file_path):
-    super(LogcatPublisher, self).__init__()
+    super().__init__()
     self._logcat_file_path = logcat_file_path
     self._thread = None
     self._process = None
@@ -104,7 +104,8 @@ class LogcatPublisher(object):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         encoding='utf-8',
-        errors='ignore')
+        errors='ignore',
+    )
     self._thread = threading.Thread(target=self._task)
     self._thread.daemon = True
     self._thread.start()
@@ -135,8 +136,12 @@ class LogcatPublisher(object):
   @property
   def is_active(self):
     """Publisher is running."""
-    return (self._process and self._process.returncode is None
-            and self._thread and self._thread.is_alive())
+    return (
+        self._process
+        and self._process.returncode is None
+        and self._thread
+        and self._thread.is_alive()
+    )
 
   def subscribe(self, subscriber):
     """Subscribe a handler to this publisher.
@@ -184,17 +189,18 @@ class LogcatPublisher(object):
           tag=match.group('tag'),
           message=match.group('message').strip(),
           host_time=datetime.datetime.now(),
-          line=line)
+          line=line,
+      )
 
       for subscriber in self._subscribers:
         subscriber.handle(pub_data)
 
 
-class LogcatSubscriber(object):
+class LogcatSubscriber:
   """Base class for logcat subscriber."""
 
   def __init__(self):
-    super(LogcatSubscriber, self).__init__()
+    super().__init__()
     self._publisher = None
 
   def subscribe(self, publisher):
@@ -237,22 +243,27 @@ class LogcatEventSubscriber(LogcatSubscriber):
 
   This class waits for a particular logcat event to occur.
 
-  Args:
+  Attributes:
     publisher: LogcatPublisher, Logcat publisher to subscribe to.
     pattern: str, Regular expression pattern to trigger on.
     tag: str, Tag portion of filterspec string.
     level: str, Level portion of filterspec string.
   """
+
   _LOG_LEVELS = 'VDIWEF'
 
   def __init__(self, publisher, pattern='.*', tag='*', level='V'):
-    super(LogcatEventSubscriber, self).__init__()
+    super().__init__()
     self._event = threading.Event()
-    self._pattern = (re.compile(pattern) if isinstance(pattern, str)
-                     else pattern)
+    self._pattern = (
+        re.compile(pattern) if isinstance(pattern, str) else pattern
+    )
     self._tag = self._process_tag(tag)
-    self._levels = (self._LOG_LEVELS if level == '*'
-                    else self._LOG_LEVELS[self._LOG_LEVELS.find(level):])
+    self._levels = (
+        self._LOG_LEVELS
+        if level == '*'
+        else self._LOG_LEVELS[self._LOG_LEVELS.find(level) :]
+    )
     self.trigger = None
     self.match = None
     self.subscribe(publisher)
@@ -310,7 +321,7 @@ class LogcatEventSubscriber(LogcatSubscriber):
       return
     if data.tag is None:
       return
-    if isinstance(self._tag, str):  #  wildcard case
+    if isinstance(self._tag, str):  # wildcard case
       if not fnmatch.fnmatchcase(data.tag, self._tag):
         return
     else:  # regex case

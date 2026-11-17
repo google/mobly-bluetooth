@@ -29,6 +29,14 @@ from typing import cast
 from mobly import logger as mobly_logger
 import paramiko
 
+_TUNNEL_ERRORS = (
+    OSError,
+    EOFError,
+    RuntimeError,
+    ValueError,
+    paramiko.SSHException,
+)
+
 
 class ForwardServer(socketserver.ThreadingTCPServer):
   """A TCP server that forwards requests to a remote host.
@@ -92,7 +100,7 @@ class Handler(socketserver.BaseRequestHandler):
           (self.chain_host, self.chain_port),
           self.request.getpeername(),
       )
-    except Exception as e:  # pylint: disable=broad-except
+    except _TUNNEL_ERRORS as e:
       self.logger.debug(
           'Incoming request to %s:%d failed: %r',
           self.chain_host,
@@ -137,7 +145,7 @@ class Handler(socketserver.BaseRequestHandler):
             if not data:
               break
             chan.sendall(data)
-          except Exception as e:  # pylint: disable=broad-except
+          except _TUNNEL_ERRORS as e:
             self.logger.debug('Local -> Remote send failed: %r', e)
             break
 
@@ -147,7 +155,7 @@ class Handler(socketserver.BaseRequestHandler):
             if not data:
               break
             self.request.sendall(data)
-          except Exception as e:  # pylint: disable=broad-except
+          except _TUNNEL_ERRORS as e:
             self.logger.debug('Remote -> Local send failed: %r', e)
             break
 
@@ -155,7 +163,7 @@ class Handler(socketserver.BaseRequestHandler):
         if not self.ssh_transport.is_active():
           self.logger.debug('SSH Transport is inactive, closing tunnel.')
           break
-    except Exception as e:  # pylint: disable=broad-except
+    except _TUNNEL_ERRORS as e:
       self.logger.debug('General tunnel loop error: %r', e)
     finally:
       # Cleanup resources individually to ensure one failure
@@ -163,10 +171,10 @@ class Handler(socketserver.BaseRequestHandler):
       if chan is not None:
         try:
           chan.close()
-        except Exception:  # pylint: disable=broad-except
+        except _TUNNEL_ERRORS:
           pass
       try:
         self.request.close()
-      except Exception:  # pylint: disable=broad-except
+      except _TUNNEL_ERRORS:
         pass
       self.logger.debug('Tunnel closed')

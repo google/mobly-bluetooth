@@ -12,23 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mobly-bluetooth"
+version = "0.1.0"
 description = "Mobly Bluetooth controller module for operating Bluetooth reference devices and development boards in Mobly tests."
 authors = [{ name = "Google LLC" }]
 maintainers = [{ name = "Mobly Team", email = "mobly-github@googlegroups.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.11"
-version = "0.1.0"
 dependencies = [
-    'dacite',
-    'immutabledict',
-    'mobly>=1.12.2',
-    'paramiko>=2.10.4',
-    'python-dateutil',
-    'typing-extensions',
+    "dacite",
+    "immutabledict",
+    "mobly>=1.12.2",
+    "paramiko>=2.10.4",
+    "python-dateutil",
+    "typing-extensions",
 ]
+
+[project.urls]
+Homepage = "https://github.com/google/mobly-bluetooth"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["mobly_bluetooth*"]
+
+[tool.setuptools.package-data]
+mobly_bluetooth = ["tools/*"]

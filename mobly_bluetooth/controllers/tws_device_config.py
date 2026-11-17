@@ -24,8 +24,7 @@ import logging
 from typing import Any
 
 import dacite
-
-from mobly.controllers.bluetooth import bes_device
+from mobly_bluetooth.controllers import bes_device
 
 # Supported controller class names as the value of `controller_type`.
 _SUPPORTED_CONTROLLER_TYPES = (bes_device.MOBLY_CONTROLLER_CONFIG_NAME,)
@@ -59,7 +58,7 @@ def from_dicts(configs: Sequence[dict[str, Any]]) -> list[DeviceConfig]:
     A list of DeviceConfig.
 
   Raises:
-    errors.ConfigError: Invalid controller config is given.
+    ConfigError: Invalid controller config is given.
   """
   device_configs = []
   if not configs:

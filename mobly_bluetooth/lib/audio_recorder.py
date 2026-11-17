@@ -60,8 +60,7 @@ from typing import Any
 from mobly import logger as mobly_logger
 from mobly import utils
 
-from mobly.controllers.bluetooth.lib import ssh as ssh_lib
-
+from mobly_bluetooth.lib import ssh as ssh_lib
 
 # Error messages used in this module.
 _START_RECORDER_IS_RUNNIN_MSG = (
@@ -155,7 +154,8 @@ class CaptureDevice:
   def plughw_name(self) -> str:
     """Returns the plughw name of the capture device.
 
-    The plughw device description uses the plug plugin and hw plugin as the underlying hardware device.
+    The plughw device description uses the plug plugin and hw plugin as the
+    underlying hardware device.
     Plug plugin is an automatic conversion plugin, which converts channels, rate
     and format on request.
     https://www.alsa-project.org/alsa-doc/alsa-lib/pcm.html
